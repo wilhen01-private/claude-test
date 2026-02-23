@@ -148,6 +148,78 @@ describe('MainStack', () => {
     });
   });
 
+  describe('SNS Topic', () => {
+    it('creates an SNS input topic', () => {
+      template.resourceCountIs('AWS::SNS::Topic', 1);
+    });
+
+    it('sets a display name on the topic', () => {
+      template.hasResourceProperties('AWS::SNS::Topic', {
+        DisplayName: 'Fargate Application Input Topic',
+      });
+    });
+
+    it('subscribes the SQS queue to the SNS topic', () => {
+      template.resourceCountIs('AWS::SNS::Subscription', 1);
+      template.hasResourceProperties('AWS::SNS::Subscription', {
+        Protocol: 'sqs',
+      });
+    });
+
+    it('outputs the SNS topic ARN', () => {
+      template.hasOutput('InputTopicArn', {
+        Description: 'ARN of the SNS input topic',
+      });
+    });
+  });
+
+  describe('SQS Queue', () => {
+    it('creates an input queue and a dead-letter queue', () => {
+      template.resourceCountIs('AWS::SQS::Queue', 2);
+    });
+
+    it('configures the input queue with a dead-letter queue', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        RedrivePolicy: Match.objectLike({
+          maxReceiveCount: 3,
+        }),
+      });
+    });
+
+    it('enforces SSL on both queues', () => {
+      template.resourceCountIs('AWS::SQS::QueuePolicy', 2);
+    });
+
+    it('passes the queue URL and topic ARN to the container as environment variables', () => {
+      const resources = template.findResources('AWS::ECS::TaskDefinition');
+      const taskDef = Object.values(resources)[0] as any;
+      const envVars: Array<{ Name: string }> =
+        taskDef.Properties.ContainerDefinitions[0].Environment;
+      expect(envVars).toBeDefined();
+      const envNames = envVars.map((e) => e.Name);
+      expect(envNames).toContain('SQS_QUEUE_URL');
+      expect(envNames).toContain('SNS_TOPIC_ARN');
+    });
+
+    it('grants the task role consume permissions on the input queue', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: Match.arrayWith([
+                'sqs:ReceiveMessage',
+                'sqs:ChangeMessageVisibility',
+                'sqs:GetQueueUrl',
+                'sqs:DeleteMessage',
+                'sqs:GetQueueAttributes',
+              ]),
+            }),
+          ]),
+        }),
+      });
+    });
+  });
+
   describe('CloudWatch Logs', () => {
     it('creates a log group with 30-day retention', () => {
       template.hasResourceProperties('AWS::Logs::LogGroup', {
